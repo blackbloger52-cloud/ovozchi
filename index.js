@@ -103,7 +103,7 @@ bot.onText(/\/start/, (msg) => {
   delete sessions[chatId];
   bot.sendMessage(
     chatId,
-    "Assalomu alaykum! 👋\n\nMen ikki ovozli xabarni birlashtiruvchi botman.\n\nBoshlash uchun birinchi ovozli xabar yoki Instagram havolasini yuboring!"
+    "Assalomu alaykum! 👋\n\nMen ikki ovozli xabarni birlashtiruvchi botman.\n\nMenga ovozli xabar, video, audio yoki Instagram havolasini yuboring!\n\n/skip — birlashtirishsiz yuborish\n/cancel — bekor qilish"
   );
 });
 
@@ -140,6 +140,14 @@ bot.on("voice", async (msg) => {
 
 bot.on("audio", async (msg) => {
   await handleAudio(msg, msg.audio.file_id);
+});
+
+bot.on("video", async (msg) => {
+  await handleVideo(msg, msg.video.file_id);
+});
+
+bot.on("video_note", async (msg) => {
+  await handleVideo(msg, msg.video_note.file_id);
 });
 
 async function handleAudio(msg, fileId) {
@@ -182,8 +190,66 @@ async function handleAudio(msg, fileId) {
   }
 }
 
+function convertVideoToVoice(videoPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(videoPath)
+      .noVideo()
+      .audioCodec("libopus")
+      .outputOptions(["-f", "ogg"])
+      .on("end", () => {
+        cleanup(videoPath);
+        resolve(outputPath);
+      })
+      .on("error", (err) => {
+        cleanup(videoPath);
+        reject(err);
+      })
+      .save(outputPath);
+  });
+}
+
+async function handleVideo(msg, fileId) {
+  const chatId = msg.chat.id;
+
+  try {
+    const fileLink = await bot.getFileLink(fileId);
+    const ext = path.extname(new URL(fileLink).pathname) || ".mp4";
+    const videoPath = path.join(tempDir, `${chatId}_video_${Date.now()}${ext}`);
+    const oggPath = path.join(tempDir, `${chatId}_vogg_${Date.now()}.ogg`);
+
+    bot.sendMessage(chatId, "Video dan audio ajratilmoqda... ⏳");
+    await downloadFile(fileLink, videoPath);
+    await convertVideoToVoice(videoPath, oggPath);
+
+    if (!sessions[chatId]) {
+      sessions[chatId] = { firstFile: oggPath };
+      bot.sendMessage(chatId, "Video audio qabul qilindi ✅\n\nEndi ikkinchi ovozli xabar, video, audio yoki Instagram havolasini yuboring.\n/skip — birlashtirishsiz yuborish");
+    } else {
+      const first = sessions[chatId].firstFile;
+      const mergedPath = path.join(tempDir, `${chatId}_merged_${Date.now()}.ogg`);
+      delete sessions[chatId];
+
+      bot.sendMessage(chatId, "Ikkinchi audio qabul qilindi ✅\nBirlashtirilmoqda...");
+
+      await mergeAudio(first, oggPath, mergedPath);
+
+      await bot.sendVoice(chatId, mergedPath, {}, { filename: "merged.ogg", contentType: "audio/ogg" });
+      bot.sendMessage(chatId, "Tayyor! ✅\n\nYana birlashtirish uchun ovozli xabar, video, audio yoki Instagram havolasini yuboring.");
+
+      cleanup(first, oggPath, mergedPath);
+    }
+  } catch (err) {
+    console.error("Video xatolik:", err);
+    if (sessions[chatId]) {
+      cleanup(sessions[chatId].firstFile);
+      delete sessions[chatId];
+    }
+    bot.sendMessage(chatId, "Video dan audio ajratishda xatolik yuz berdi ❌\nIltimos, qaytadan urinib ko'ring.");
+  }
+}
+
 bot.on("message", async (msg) => {
-  if (msg.voice || msg.audio || (msg.text && msg.text.startsWith("/"))) return;
+  if (msg.voice || msg.audio || msg.video || msg.video_note || (msg.text && msg.text.startsWith("/"))) return;
 
   // Check for Instagram link
   if (msg.text) {
@@ -194,7 +260,7 @@ bot.on("message", async (msg) => {
     }
   }
 
-  bot.sendMessage(msg.chat.id, "Iltimos, menga ovozli xabar yoki Instagram havolasini yuboring 🎤");
+  bot.sendMessage(msg.chat.id, "Iltimos, menga ovozli xabar, video, audio yoki Instagram havolasini yuboring 🎤");
 });
 
 async function handleInstagramLink(msg, url) {
